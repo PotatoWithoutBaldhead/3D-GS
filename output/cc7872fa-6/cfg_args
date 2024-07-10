@@ -1,0 +1,1 @@
+Namespace(sh_degree=3, source_path='D:\\yyt_code\\3D-GS', model_path='./output/cc7872fa-6', images='images', resolution=-1, white_background=False, data_device='cuda', eval=False)
