@@ -10,17 +10,6 @@ import tqdm
 import math
 import matplotlib.pyplot as plt
    
-
-# def in_frustum(points, viewmatrix, projmatrix, prefiltered):
-#     P = points.size(0)
-#     p_orig_hom = torch.cat(points, torch.ones((P, 1)))
-#     p_hom = projmatrix @ p_orig_hom.T
-#     p_w = 1.0 / (p_hom[:, 3] + 0.0000001)
-#     p_proj = [p_orig_hom[:, 0] * p_w, p_orig_hom[:, 1] * p_w, p_orig_hom[:, 2] * p_w]
-#     p_view = viewmatrix @ p_orig_hom.T
-    
-#     mask = (p_view[:, 2] <= 0.2 and not prefiltered).squeeze()
-#     return mask
 TILE_X = 16
 TILE_Y = 16
 C0 = 0.28209479177387814
@@ -60,11 +49,7 @@ def computeCov2D(points, fovx, fovy, tan_fovx, tan_fovy, covariance3D, viewmatri
     tx = (p_orig_hom[..., 0] / p_orig_hom[..., 2]).clip(min=-tan_fovx*1.3, max=tan_fovx*1.3) * points[..., 2]
     ty = (p_orig_hom[..., 1] / p_orig_hom[..., 2]).clip(min=-tan_fovy*1.3, max=tan_fovy*1.3) * points[..., 2]
     tz = p_orig_hom[..., 2]
-    # t[:, 0] = min(limx, max(-limx, txtz)) * t[:, 2]
-    # t[:, 1] = min(limy, max(-limx, tytz)) * t[:, 2]
-    # t[:, 0] = torch.min(torch.tensor(limx, device='cuda'), torch.max(torch.tensor(-limx, device='cuda'), txtz)) * t[:, 2]
-    # t[:, 1] = torch.min(torch.tensor(limy, device='cuda'), torch.max(torch.tensor(-limy, device='cuda'), tytz)) * t[:, 2]
-    
+
     ## 计算雅可比矩阵J
     J = torch.zeros((P, 3, 3), dtype=torch.float, device='cuda')
     J[..., 0, 0] = 1 / tz * fovx
@@ -77,20 +62,8 @@ def computeCov2D(points, fovx, fovy, tan_fovx, tan_fovy, covariance3D, viewmatri
     W_expanded = W.unsqueeze(0).expand(P, -1, -1)
     
     M = torch.bmm(J, W_expanded)
-    
-    # Vrk = torch.zeros((P, 3, 3), dtype=torch.float, device='cuda')
-    # Vrk[:, 0, 0] = covariance3D[:, 0]
-    # Vrk[:, 0, 1] = Vrk[:, 1, 0] = covariance3D[:, 1]
-    # Vrk[:, 0, 2] = Vrk[:, 2, 0] = covariance3D[:, 2]
-    # Vrk[:, 1, 1] = covariance3D[:, 3]
-    # Vrk[:, 1, 2] = Vrk[:, 2, 1] = covariance3D[:, 4]
-    # Vrk[:, 2, 2] = covariance3D[:, 5]
-    
+
     cov = torch.bmm(torch.bmm(M, covariance3D), M.transpose(1, 2))
-    # cov2D = torch.zeros((P, 3), dtype=float, device='cuda')
-    # cov2D[:, 0] = cov[:, 0, 0] + 0.3
-    # cov2D[:, 1] = cov[:, 0, 1]
-    # cov2D[:, 2] = cov[:, 1, 1] + 0.3
     cov[:, 0, 0] += 0.3
     cov[:, 1, 1] += 0.3
     
@@ -177,14 +150,9 @@ def preprocess(P, D, M, points, scales, scale_modifier, rotations, opacities, sh
     p_w = 1.0 / (p_hom[:, 3] + 0.0000001)
     
     p_proj = p_hom * p_w[:, None]
-    
-    ## 计算3D协方差
-    # if cov3D_precomp.shape[0] != 0:
-    #     cov3D = cov3D_precomp[in_frustum_mask]
-    # else:
+
     L = build_scaling_rotation(scale_modifier * scales[in_frustum_mask], rotations[in_frustum_mask])
     cov3D = L @ L.transpose(1,2)
-    # cov3D = strip_symmetric(actral_covariance)
        
     ## 计算2D协方差 
     cov2D = computeCov2D(p_view[in_frustum_mask], focal_x, focal_y, tan_fovx, tan_fovy, cov3D, viewmatrix)
@@ -216,8 +184,6 @@ def preprocess(P, D, M, points, scales, scale_modifier, rotations, opacities, sh
     
     ## 筛选高斯是否对tile有贡献
     rect_min, rect_max = getRect(point_image, my_radius, W, H)
-    # tile_touched0_mask = ((rect_max[:, 0] - rect_min[:, 0]) * (rect_max[:, 1] - rect_min[:, 1]) != 0).squeeze()  # 掩码3：有贡献高斯掩码
-    # points_attribute = points_in_frustum_and_inv
     P_attribute = points_in_frustum_and_inv.shape[0]
     
     depths = torch.zeros(P_attribute, dtype=torch.float32, device=data_device)
@@ -246,80 +212,6 @@ def preprocess(P, D, M, points, scales, scale_modifier, rotations, opacities, sh
     conic_opacity = torch.cat((conic, opacities[in_frustum_mask][if_inv_mask].unsqueeze(1)), dim=1)
     
     return depths, points_xy_image, rgb, conic_opacity, rect_min, rect_max
-    
-def render_per_pixel1(points_xy_image, tile_gs_pair, rgb, conic_opacity, radii, tiles_x, tiles_y, W, H):
-    # tile_idx_gs = torch.cat((tile_gs_pair, torch.arange(0, tiles_x * tiles_y).unsqueeze(1).to(points_xy_image.device)), dim=1)
-    
-    # # dim = 1 的地方，第一个数放像素索引，第二个数放像素对应的tile索引，第三个元素放计算的颜色
-    # rgb_for_pixel = torch.cat((torch.arange(0, W * H).unsqueeze(1), torch.zeros((W * H, 2))), dim=1)
-    # # 计算每个像素对应的tile
-    # rgb_for_pixel[:, 1] = rgb_for_pixel[:, 0] // W // TILE_X * tiles_x + rgb_for_pixel[:, 0] % W // TILE_Y
-    start_time = time.time()
-    rgb_for_pixel = torch.zeros((W, H, 3), dtype=torch.float32, device=points_xy_image.device)
-    contributor_gs_num = torch.zeros(W*H, dtype=torch.float32, device=points_xy_image.device)
-    for tile_idx in range(tiles_x * tiles_y):
-        # 计算tile的左上角坐标
-        tile_x_pix = (tile_idx % tiles_x) * TILE_X
-        tile_y_pix = (tile_idx // tiles_x) * TILE_Y
-        
-        # 提取属于该tile的gs的id
-        gs_for_tile = tile_gs_pair[tile_idx, :]
-        mask = gs_for_tile != -1
-        filtered_gs = gs_for_tile[mask]
-        
-        # dim0存像素索引， dim1存像素x坐标， dim2存像素y坐标
-        pixel_for_tile = torch.zeros((TILE_X * TILE_Y, 3), device=points_xy_image.device)
-        # pixel_gs_pair = torch.zeros((TILE_X * TILE_Y, 3), device=points_xy_image.device)
-        for i in range(TILE_X):
-            for j in range(TILE_Y):
-                pixel_idx = (tile_y_pix + j) * W + (tile_x_pix + i)
-                pixel_for_tile[i * TILE_X + j, 0] = pixel_idx
-                pixel_for_tile[i * TILE_X + j, 1] = pixel_idx % W
-                pixel_for_tile[i * TILE_X + j, 2] = pixel_idx // W
-                # T = 0
-                # contributor = 0
-                # for gs in filtered_gs:
-                #     d = [points_xy_image[gs, 0] - pixel_idx % W, points_xy_image[gs, 1] - pixel_idx // W]
-                #     power = -0.5 * (conic_opacity[gs, 0] * d[0] * d[0] + conic_opacity[gs, 2] * d[1] * d[1]) - conic_opacity[gs, 1] * d[0] * d[1]
-                #     if power > 0: 
-                #         continue
-                #     alpha = conic_opacity[gs, 3] * torch.exp(power)
-                #     test_T = T * (1 - alpha)
-                #     if test_T < 0.0001:
-                #         break
-                #     rgb_for_pixel[pixel_idx % W, pixel_idx // W, 0] += rgb[gs, 0] * alpha * T
-                #     rgb_for_pixel[pixel_idx % W, pixel_idx // W, 1] += rgb[gs, 1] * alpha * T
-                #     rgb_for_pixel[pixel_idx % W, pixel_idx // W, 2] += rgb[gs, 2] * alpha * T
-                #     contributor += 1
-                #     T = test_T
-                # contributor_gs_num[pixel_idx] = contributor
-        rgb_for_tile = torch.zeros(TILE_X * TILE_Y, filtered_gs.shape[0])
-        for gs in filtered_gs:
-            T = torch.zeros((TILE_X * TILE_Y), dtype=torch.float32, device=points_xy_image.device)
-            d = [points_xy_image[gs, 0] - pixel_for_tile[:, 1], points_xy_image[gs, 1] - pixel_for_tile[:, 2]]
-            power = -0.5 * (conic_opacity[gs, 0] * d[:, 0] * d[:, 0] + conic_opacity[gs, 2] * d[:, 1] * d[:, 1]) - conic_opacity[gs, 1] * d[:, 0] * d[:, 1]
-            power = torch.where(power < 0.001, torch.tensor(-float('inf')), power)
-            alpha = conic_opacity[gs, 3] * torch.exp(power)
-            T = T * (1 - alpha)
-            T = torch.where(T < 0.0001, torch.tensor(0.0), T)
-            rgb_for_tile += rgb[gs, :] * alpha[:, None] * T[:, None]
-            
-            
-    rgb_for_pixel = rgb_for_pixel.cpu()
-
-    # 将张量值从[0, 1]范围扩展到[0, 255]范围并转换为uint8类型
-    rgb_for_pixel = (rgb_for_pixel * 255).byte()
-
-    # 转换为PIL图像
-    transform = transforms_T.ToPILImage()
-    image = transform(rgb_for_pixel.permute(2, 0, 1))  # 需要将张量的通道顺序从(W, H, 3)转换为(3, W, H)
-
-    # 保存图像
-    image.save('output_image.png')
-    end_time = time.time()
-    print(f"渲染图片保存成功，用时为{end_time - start_time}")
-        
-    return
 
 def IfTileInGS(idx, tile_x, rect_min, rect_max):
     idx_x = idx % tile_x
@@ -335,9 +227,6 @@ def render_per_pixel(points_xy_image, rgb, conic_opacity, depths, background, ti
     output_color = torch.zeros((W, H, 3), dtype=torch.float, device='cuda')
     final_T = torch.zeros((W, H, 1), device=points_xy_image.device, dtype=torch.float) # 每一像素点的透明度
     contribute_num_for_pixel = torch.zeros((W, H, 1), dtype=torch.float, device='cuda')
-
-    # 渲染进度条
-    # progress_bar = tqdm(range(tiles_x * tiles_y), desc="Rendering progress")
     
     for tile_idx in range(tiles_x * tiles_y):
         i = tile_idx % tiles_x
@@ -351,12 +240,8 @@ def render_per_pixel(points_xy_image, rgb, conic_opacity, depths, background, ti
         pix_num_y = min(TILE_Y, pixel_max_y - pixel_min_y)
         
         if_idx_in_gs = IfTileInGS(tile_idx, tiles_x, rect_min, rect_max)
-        # if_idx_in_gs = ((i >= rect_min[:, 0]) & (i < rect_max[:, 0]) & (j >= rect_min[:, 1]) & (j < rect_max[:, 1]))
         depths_filtered = depths[if_idx_in_gs]
-        # sorted_idx = torch.argsort(depths_filtered)
-        filtered_gs_sorted = points_xy_image[if_idx_in_gs]
-        # depth_tile = depths[if_idx_in_gs]
-        
+        filtered_gs_sorted = points_xy_image[if_idx_in_gs]  
         gs_num_of_tile = filtered_gs_sorted.shape[0]
         
         # 初始化变量
@@ -384,10 +269,7 @@ def render_per_pixel(points_xy_image, rgb, conic_opacity, depths, background, ti
         color = torch.sum(alpha * T * rgb_c, dim=2)
         output_color[pixel_min_x : pixel_max_x, pixel_min_y : pixel_max_y] = color
         contribute_num_for_pixel[pixel_min_x : pixel_max_x, pixel_min_y : pixel_max_y] = torch.sum((alpha != 0).int(), dim = 2)
-    #         with torch.no_grad():
-    #             progress_bar.update(1)
-        
-    # progress_bar.close()
+
     contribute_num_for_pixel_1D = contribute_num_for_pixel.squeeze(-1).flatten()
     _, ax = plt.subplots()
     ax.plot(contribute_num_for_pixel_1D.cpu(), marker='o', linestyle='-', color='b', label='Line 1')
