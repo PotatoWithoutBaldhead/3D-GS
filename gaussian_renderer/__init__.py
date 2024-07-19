@@ -6,12 +6,6 @@ from utils.sh_utils import eval_sh
 
 
 def render(viewpoint_cameras, pc : GaussianModel, pipe, bg_color: torch.Tensor, scaling_modifier = 1.0, override_color = None):
-    screenspace_points = torch.zeros_like(pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad = True, device = "cuda") + 0
-    try:
-        screenspace_points.retain_grad()
-    except:
-        pass
-    
     # 创建光栅化配置
     tanfovx = math.tan(viewpoint_cameras.FoVx * 0.5)
     tanfovy = math.tan(viewpoint_cameras.FoVy * 0.5)
@@ -34,7 +28,6 @@ def render(viewpoint_cameras, pc : GaussianModel, pipe, bg_color: torch.Tensor, 
     rasterizer = GaussianRasterizer(raster_settings = raster_settings)
     
     means3D = pc.get_xyz
-    means2D = screenspace_points
     opacity = pc.get_opacity
     
     # 若python中预先计算了协方差，则直接使用，否则将在光栅化中计算
@@ -68,7 +61,6 @@ def render(viewpoint_cameras, pc : GaussianModel, pipe, bg_color: torch.Tensor, 
         
     rendered_image, radii = rasterizer(
         means3D = means3D,
-        means2D = means2D,
         shs = shs,
         color_precomp = colors_precomp,
         opacities = opacity,
@@ -79,7 +71,6 @@ def render(viewpoint_cameras, pc : GaussianModel, pipe, bg_color: torch.Tensor, 
     
     return {
         "render" : rendered_image,
-        "viewspace_points" : screenspace_points,
         "visibility_filter" : radii > 0,
         "radii" : radii
     }

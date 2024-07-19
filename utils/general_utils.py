@@ -71,7 +71,7 @@ def build_rotation(r):
     R[:, 1, 0] = 2 * (x*y + r*z)
     R[:, 1, 1] = 1 - 2 * (x*x + z*z)
     R[:, 1, 2] = 2 * (y*z - r*x)
-    R[:, 2, 0] = 2 * (y*z - r*y)
+    R[:, 2, 0] = 2 * (x*z - r*y)
     R[:, 2, 1] = 2 * (y*z + r*x)
     R[:, 2, 2] = 1 - 2 * (x*x + y*y) 
     return R

@@ -6,7 +6,6 @@ from submodules.diff_gaussian_rasterization.rasterize import RasterizeGaussians
 
 def rasterize_gaussians(
     means3D,
-    means2D,
     sh,
     colors_precomp,
     opacities,
@@ -18,7 +17,6 @@ def rasterize_gaussians(
     rasterizer = RasterizeGaussians(raster_settings)
     return rasterizer(
         means3D,
-        means2D,
         sh,
         colors_precomp,
         opacities,
@@ -58,7 +56,7 @@ class GaussianRasterizer(nn.Module):
             )
         return visible
     
-    def forward(self, means3D, means2D, opacities, shs = None, color_precomp = None,
+    def forward(self, means3D, opacities, shs = None, color_precomp = None,
                 scales = None, rotations = None, cov3D_precomp = None):
         raster_settings = self.raster_settings
         
@@ -83,7 +81,6 @@ class GaussianRasterizer(nn.Module):
         ## 开始渲染
         return rasterize_gaussians(
             means3D,
-            means2D,
             shs,
             color_precomp,
             opacities,

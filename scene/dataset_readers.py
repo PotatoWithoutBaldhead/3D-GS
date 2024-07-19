@@ -142,10 +142,10 @@ def readColmapSceneInfo(path, images, eval, llffhold = 8):
     #     cam_intrinsics = read_insrinsics_text(cameras_insrinsic_file)
         
     read_dir = "images" if images == None else images
-    cam_infos_unsorted = readColmapCameras(cam_extrinsics = cam_extrinsics, cam_intrinsics = cam_intrinsics, images_folder = os.path.join(path, read_dir))
+    cam_infos = readColmapCameras(cam_extrinsics = cam_extrinsics, cam_intrinsics = cam_intrinsics, images_folder = os.path.join(path, read_dir))
     
     ## 根据图像名称对相机信息进行排序
-    cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
+    # cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
     
     if eval:
         train_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold != 0]

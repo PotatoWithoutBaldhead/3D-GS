@@ -25,7 +25,6 @@ class RasterizeGaussians(nn.Module):
     def forward(
         self,
         means3D,
-        means2D,
         sh,
         colors_precomp,
         opacities,
@@ -108,23 +107,6 @@ def rasterize_gaussians_python(
     # int_opts = means3D.options().dtype(torch.int32)
     # float_opts = means3D.options().dtype(torch.float32)
     
-    int_opts = torch.int32
-    float_opts = torch.float32
-    
-    out_color = torch.full((NUM_CHANNELS, H, W), 0.0, dtype = float_opts)
-    radii = torch.full((P, ), 0, dtype = int_opts)
-    
-    device = torch.device('cuda')
-    options = torch.uint8
-    
-    geoBuffer = torch.empty((0), dtype=options, device=device)
-    binningBuffer = torch.empty((0), dtype=options, device=device)
-    imgBuffer = torch.empty((0), dtype=options, device=device)
-    
-    geoFunc = resizeFunctional(geoBuffer)
-    binningFunc = resizeFunctional(binningBuffer)
-    imgFunc = resizeFunctional(imgBuffer)
-    
     rendered = 0
     if P != 0:
         M = 0
@@ -132,9 +114,6 @@ def rasterize_gaussians_python(
             M = sh.size(1)
         
         rendered = forward(
-           geoFunc,
-           binningFunc,
-           imgFunc,
            P, degree, M,  # degree为实际生效的球谐阶数，M为参数个数
            background,
            W,H,
@@ -152,29 +131,26 @@ def rasterize_gaussians_python(
            tan_fovx,
            tan_fovy,
            prefiltered,
-           out_color,
-           radii,
            debug
         )
-    return tuple(rendered, out_color, radii, geoBuffer, binningBuffer, imgBuffer)
+    return rendered
 
-def IfTileInGS(idx, rect_min, rect_max):
-    idx_x = idx % TILE_X
-    idx_y = idx // TILE_Y
-    X_in_gs = (idx_x >= rect_min[:, 0]) & (idx_x < rect_max[:, 0])
-    Y_in_gs = (idx_y >= rect_min[:, 1]) & (idx_y < rect_max[:, 1])
-    tile_in_gs = X_in_gs & Y_in_gs
-    return tile_in_gs
+# def IfTileInGS(idx, tile_x, rect_min, rect_max):
+#     idx_x = idx % tile_x
+#     idx_y = idx // tile_x
+#     X_in_gs = (idx_x >= rect_min[:, 0]) & (idx_x < rect_max[:, 0])
+#     Y_in_gs = (idx_y >= rect_min[:, 1]) & (idx_y < rect_max[:, 1])
+#     tile_in_gs = X_in_gs & Y_in_gs
+#     return tile_in_gs
 
-def PairMatrix(tile_x, tile_y, rect_min, rect_max):
-    pair_matrix = torch.full((rect_min.shape[0], tile_x * tile_y), False, dtype=torch.bool, device=rect_min.device)
-    for idx in range(tile_x * tile_y):
-        if_idx_in_gs = IfTileInGS(idx, rect_min, rect_max)
-        pair_matrix[:, idx] = if_idx_in_gs
-    return pair_matrix
+# def PairMatrix(tile_x, tile_y, rect_min, rect_max):
+#     pair_matrix = torch.full((rect_min.shape[0], tile_x * tile_y), False, dtype=torch.bool, device=rect_min.device)
+#     for idx in range(tile_x * tile_y):
+#         if_idx_in_gs = IfTileInGS(idx, tile_x, rect_min, rect_max)
+#         pair_matrix[:, idx] = if_idx_in_gs
+#     return pair_matrix
 
 def forward(
-    geometryBuffer, binningBuffer, imgBuffer,
     P, D, M, background,
     width, height,
     means3D, shs,
@@ -189,39 +165,42 @@ def forward(
     cam_pos,
     tan_fovx, tan_fovy,
     prefiltered,
-    out_color,
-    radii,
     debug
 ):
     focal_y = height / (2.0 * tan_fovy)
-    focal_x = height / (2.0 * tan_fovx)
+    focal_x = width / (2.0 * tan_fovx)
     
     if NUM_CHANNELS != 3 and colors_precomp is None:
         raise RuntimeError("For non-RGB, provide precomputed Gaussian colors!")
 
     # 光栅化之前对每个高斯进行初步处理（包括计算每个高斯所占据的tile）
-    radii, tiles_touched, depths, points_xy_image, rgb, conic_opacity, rect_min, rect_max = preprocess(P, D, M,
+    depths, points_xy_image, rgb, conic_opacity, rect_min, rect_max = preprocess(P, D, M,
     means3D, scales, scale_modifier, rotations, opacities, shs, cov3D_precomp, 
     colors_precomp, viewmatrix, projmatrix, cam_pos, width, height, tan_fovx, tan_fovy, focal_x, focal_y, prefiltered
 )
     tile_x = (width + TILE_X - 1) // TILE_X
     tile_y = (height + TILE_Y - 1) // TILE_Y
 
-    pair_gaussian_tile = PairMatrix(tile_x, tile_y, rect_min, rect_max)
+    # pair_gaussian_tile = PairMatrix(tile_x, tile_y, rect_min, rect_max)
 
-    pair_matrix = pair_gaussian_tile.int()
+    # pair_matrix = pair_gaussian_tile.int()
     
-    idx_matrix = torch.arange(1, points_xy_image.shape[0] + 1).unsqueeze(1).repeat(1, tile_x * tile_y).to(points_xy_image.device)
-    pair_matrix_with_idx = pair_matrix * idx_matrix
+    # idx_matrix = torch.arange(1, points_xy_image.shape[0] + 1).unsqueeze(1).repeat(1, tile_x * tile_y).to(points_xy_image.device)
+    # pair_matrix_with_idx = pair_matrix * idx_matrix
 
     # 按照depth对高斯的索引进行排序
-    sorted_indices = torch.argsort(depths)
+    depth_sorted, sorted_indices = torch.sort(depths)
     # 按照sorted_indices对gs-tiles对进行排序
-    sorted_pair_matrix_with_idx = pair_matrix_with_idx[sorted_indices, :]
-    sorted_pair_matrix_with_idx = sorted_pair_matrix_with_idx + torch.full((points_xy_image.shape[0], tile_x * tile_y), -1, dtype=torch.int, device=points_xy_image.device)
+    # sorted_pair_matrix_with_idx = pair_matrix_with_idx[sorted_indices, :]
+    # sorted_pair_matrix_with_idx = sorted_pair_matrix_with_idx + torch.full((points_xy_image.shape[0], tile_x * tile_y), -1, dtype=torch.int, device=points_xy_image.device)
     
-    tile_gs_pair = sorted_pair_matrix_with_idx.T
-    render_per_pixel(points_xy_image, tile_gs_pair, rgb, conic_opacity, radii, tile_x, tile_y, width, height)
+    # tile_gs_pair = sorted_pair_matrix_with_idx.T.to(points_xy_image.device)
+
+    output_color = render_per_pixel(points_xy_image[sorted_indices],
+                                    rgb[sorted_indices], conic_opacity[sorted_indices], 
+                                    depth_sorted, background, tile_x, tile_y, width, height, 
+                                    rect_min[sorted_indices], rect_max[sorted_indices])
+    
     
     return
     

@@ -24,7 +24,7 @@ class GaussianModel:
         
         self.covariance_activation = build_covariance_from_scaling_rotation
         
-        self.opacity_activation = inverse_sigmoid
+        self.opacity_activation = torch.sigmoid
         self.rotation_activation = torch.nn.functional.normalize
             
     def __init__(self, sh_degree : int):
