@@ -4,26 +4,26 @@ from torch import nn
 from submodules.diff_gaussian_rasterization.rasterize import RasterizeGaussians
 
 
-def rasterize_gaussians(
-    means3D,
-    sh,
-    colors_precomp,
-    opacities,
-    scales,
-    rotations,
-    cov3Ds_precomp,
-    raster_settings
-):
-    rasterizer = RasterizeGaussians(raster_settings)
-    return rasterizer(
-        means3D,
-        sh,
-        colors_precomp,
-        opacities,
-        scales,
-        rotations,
-        cov3Ds_precomp
-    )
+# def rasterize_gaussians(
+#     means3D,
+#     sh,
+#     colors_precomp,
+#     opacities,
+#     scales,
+#     rotations,
+#     cov3Ds_precomp,
+#     raster_settings
+# ):
+#     rasterizer = RasterizeGaussians(raster_settings)
+#     return rasterizer(
+#         means3D,
+#         sh,
+#         colors_precomp,
+#         opacities,
+#         scales,
+#         rotations,
+#         cov3Ds_precomp
+#     )
 
 
 class GaussianRasterizationSettings(NamedTuple):
@@ -44,6 +44,7 @@ class GaussianRasterizer(nn.Module):
     def __init__(self, raster_settings):
         super().__init__()
         self.raster_settings = raster_settings
+        # self.means2D = None
         
     def markVisible(self, positions):
         with torch.no_grad():
@@ -78,16 +79,18 @@ class GaussianRasterizer(nn.Module):
         if cov3D_precomp is None:
             cov3D_precomp = torch.Tensor([])
             
+        rasterizer = RasterizeGaussians(raster_settings)
+
         ## 开始渲染
-        return rasterize_gaussians(
+        result = rasterizer(
             means3D,
             shs,
             color_precomp,
             opacities,
             scales,
             rotations,
-            cov3D_precomp,
-            raster_settings
+            cov3D_precomp
         )
-        
-            
+        # self.means2D = rasterizer.means2D
+        return result
+    

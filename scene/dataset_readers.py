@@ -118,11 +118,11 @@ def getNerfppNorm(cam_info):
         cam_centers.append(C2W[:3, 3:4])  # 为了保持维度一致，进行切片3:4
         
     center, diagonal = get_center_and_diag(cam_centers)
-    raduis = diagonal * 1.1
+    radius = diagonal * 1.1
     
     translate = -center
     
-    return {"translate": translate, "radius" : raduis}
+    return {"translate": translate, "radius" : radius}
         
 def readColmapSceneInfo(path, images, eval, llffhold = 8):
     
@@ -142,10 +142,10 @@ def readColmapSceneInfo(path, images, eval, llffhold = 8):
     #     cam_intrinsics = read_insrinsics_text(cameras_insrinsic_file)
         
     read_dir = "images" if images == None else images
-    cam_infos = readColmapCameras(cam_extrinsics = cam_extrinsics, cam_intrinsics = cam_intrinsics, images_folder = os.path.join(path, read_dir))
-    
-    ## 根据图像名称对相机信息进行排序
-    # cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
+    cam_infos_unsorted = readColmapCameras(cam_extrinsics = cam_extrinsics, cam_intrinsics = cam_intrinsics, images_folder = os.path.join(path, read_dir))
+
+    # 根据图像名称对相机信息进行排序
+    cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
     
     if eval:
         train_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold != 0]

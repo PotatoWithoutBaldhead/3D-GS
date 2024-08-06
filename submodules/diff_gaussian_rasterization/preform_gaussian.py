@@ -10,6 +10,17 @@ import tqdm
 import math
 import matplotlib.pyplot as plt
    
+
+# def in_frustum(points, viewmatrix, projmatrix, prefiltered):
+#     P = points.size(0)
+#     p_orig_hom = torch.cat(points, torch.ones((P, 1)))
+#     p_hom = projmatrix @ p_orig_hom.T
+#     p_w = 1.0 / (p_hom[:, 3] + 0.0000001)
+#     p_proj = [p_orig_hom[:, 0] * p_w, p_orig_hom[:, 1] * p_w, p_orig_hom[:, 2] * p_w]
+#     p_view = viewmatrix @ p_orig_hom.T
+    
+#     mask = (p_view[:, 2] <= 0.2 and not prefiltered).squeeze()
+#     return mask
 TILE_X = 16
 TILE_Y = 16
 C0 = 0.28209479177387814
@@ -49,7 +60,11 @@ def computeCov2D(points, fovx, fovy, tan_fovx, tan_fovy, covariance3D, viewmatri
     tx = (p_orig_hom[..., 0] / p_orig_hom[..., 2]).clip(min=-tan_fovx*1.3, max=tan_fovx*1.3) * points[..., 2]
     ty = (p_orig_hom[..., 1] / p_orig_hom[..., 2]).clip(min=-tan_fovy*1.3, max=tan_fovy*1.3) * points[..., 2]
     tz = p_orig_hom[..., 2]
-
+    # t[:, 0] = min(limx, max(-limx, txtz)) * t[:, 2]
+    # t[:, 1] = min(limy, max(-limx, tytz)) * t[:, 2]
+    # t[:, 0] = torch.min(torch.tensor(limx, device='cuda'), torch.max(torch.tensor(-limx, device='cuda'), txtz)) * t[:, 2]
+    # t[:, 1] = torch.min(torch.tensor(limy, device='cuda'), torch.max(torch.tensor(-limy, device='cuda'), tytz)) * t[:, 2]
+    
     ## 计算雅可比矩阵J
     J = torch.zeros((P, 3, 3), dtype=torch.float, device='cuda')
     J[..., 0, 0] = 1 / tz * fovx
@@ -62,7 +77,15 @@ def computeCov2D(points, fovx, fovy, tan_fovx, tan_fovy, covariance3D, viewmatri
     W_expanded = W.unsqueeze(0).expand(P, -1, -1)
     
     M = torch.bmm(J, W_expanded)
-
+    
+    # Vrk = torch.zeros((P, 3, 3), dtype=torch.float, device='cuda')
+    # Vrk[:, 0, 0] = covariance3D[:, 0]
+    # Vrk[:, 0, 1] = Vrk[:, 1, 0] = covariance3D[:, 1]
+    # Vrk[:, 0, 2] = Vrk[:, 2, 0] = covariance3D[:, 2]
+    # Vrk[:, 1, 1] = covariance3D[:, 3]
+    # Vrk[:, 1, 2] = Vrk[:, 2, 1] = covariance3D[:, 4]
+    # Vrk[:, 2, 2] = covariance3D[:, 5]
+    
     cov = torch.bmm(torch.bmm(M, covariance3D), M.transpose(1, 2))
     cov[:, 0, 0] += 0.3
     cov[:, 1, 1] += 0.3
@@ -134,7 +157,7 @@ def computeColorFromSH(deg, sh, dirs):
     result_clamped = torch.clamp(result, min=0.0, max=1.0)
     return result_clamped
      
-def preprocess(P, D, M, points, scales, scale_modifier, rotations, opacities, shs, cov3D_precomp, colors_precomp, 
+def preprocess(P, D, points, scales, scale_modifier, rotations, opacities, shs, cov3D_precomp, colors_precomp, 
                viewmatrix, projmatrix, cam_pos, W, H, tan_fovx, tan_fovy, focal_x, focal_y, prefiltered):
     data_device = points.device
     p_one = torch.ones((P, 1), device=data_device)
@@ -143,16 +166,21 @@ def preprocess(P, D, M, points, scales, scale_modifier, rotations, opacities, sh
     in_frustum_mask = (p_view[:, 2] > 0.2).squeeze()  # 掩码1：判断是否在是椎体内的mask
     
     points_in_frustum = points[in_frustum_mask]  # 在视锥体内的高斯
-    P_in_frustum = points_in_frustum.shape[0]
+    # P_in_frustum = points_in_frustum.shape[0]
     
     p_orig_hom_in_frustum = p_orig_hom[in_frustum_mask]
     p_hom = p_orig_hom_in_frustum @ projmatrix
     p_w = 1.0 / (p_hom[:, 3] + 0.0000001)
     
     p_proj = p_hom * p_w[:, None]
-
+    
+    ## 计算3D协方差
+    # if cov3D_precomp.shape[0] != 0:
+    #     cov3D = cov3D_precomp[in_frustum_mask]
+    # else:
     L = build_scaling_rotation(scale_modifier * scales[in_frustum_mask], rotations[in_frustum_mask])
     cov3D = L @ L.transpose(1,2)
+    # cov3D = strip_symmetric(actral_covariance)
        
     ## 计算2D协方差 
     cov2D = computeCov2D(p_view[in_frustum_mask], focal_x, focal_y, tan_fovx, tan_fovy, cov3D, viewmatrix)
@@ -162,7 +190,7 @@ def preprocess(P, D, M, points, scales, scale_modifier, rotations, opacities, sh
     
     points_in_frustum_and_inv = points_in_frustum[if_inv_mask]  # 在视锥体内且二维协方差可逆的高斯
     P_in_frustum_and_inv = points_in_frustum_and_inv.shape[0]
-    det_not0 = det[if_inv_mask]
+    # det_not0 = det[if_inv_mask]
     cov2D_det_not0 = cov2D[if_inv_mask]
     
     # 二维协方差的逆矩阵
@@ -175,29 +203,29 @@ def preprocess(P, D, M, points, scales, scale_modifier, rotations, opacities, sh
     eigenvalues = torch.linalg.eigvals(cov2D_det_not0)
     
     lambda1, _ = torch.max(eigenvalues.type(torch.float), dim=1, keepdim=True)
-    my_radius = 3.0 * torch.ceil(torch.sqrt(lambda1.squeeze(1)))
+    my_radius = torch.ceil(3.0 * torch.sqrt(lambda1.squeeze(1)))
     
     ## 将ndc坐标转换为像素坐标
     point_image = torch.zeros((P_in_frustum_and_inv, 2), dtype=torch.float, device=data_device)
-    point_image[:, 0] = ndc2Pix(p_proj[if_inv_mask][:, 0], W)
     point_image[:, 1] = ndc2Pix(p_proj[if_inv_mask][:, 1], H)
     
     ## 筛选高斯是否对tile有贡献
     rect_min, rect_max = getRect(point_image, my_radius, W, H)
-    P_attribute = points_in_frustum_and_inv.shape[0]
+    tile_touched_mask = ((rect_max[:, 0] - rect_min[:, 0]) * (rect_max[:, 1] - rect_min[:, 1]) != 0).squeeze()  # 掩码3：有贡献高斯掩码
+    points_attribute = points_in_frustum_and_inv[tile_touched_mask]
+    P_attribute = points_attribute.shape[0]
     
     depths = torch.zeros(P_attribute, dtype=torch.float32, device=data_device)
-    points_xy_image = torch.zeros((P_attribute, 2), dtype=torch.float32, device=data_device)
     rgb = torch.zeros((P_attribute, 3), dtype=torch.float32, device=data_device)
     conic_opacity = torch.zeros((P_attribute, 4), dtype=torch.float32, device=data_device)
     
     ## 计算颜色
-    shs_attribute = shs[in_frustum_mask][if_inv_mask]
+    shs_attribute = shs[in_frustum_mask][if_inv_mask][tile_touched_mask]
     if colors_precomp.shape[0] == 0:
         dirs = torch.zeros((P_attribute, 3), dtype=torch.float, device=data_device)
-        dirs[:, 0] = points_in_frustum_and_inv[:, 0] - cam_pos[0]
-        dirs[:, 1] = points_in_frustum_and_inv[:, 1] - cam_pos[1]
-        dirs[:, 2] = points_in_frustum_and_inv[:, 2] - cam_pos[2]
+        dirs[:, 0] = points_attribute[:, 0] - cam_pos[0]
+        dirs[:, 1] = points_attribute[:, 1] - cam_pos[1]
+        dirs[:, 2] = points_attribute[:, 2] - cam_pos[2]
         length_dir_inv = 1 / torch.sqrt(dirs[..., 0] ** 2 + dirs[..., 1] ** 2 + dirs[..., 2] ** 2)
         dirs = dirs * length_dir_inv[:, None]  # 方向单位化
         result = computeColorFromSH(D, shs_attribute, dirs)
@@ -207,11 +235,90 @@ def preprocess(P, D, M, points, scales, scale_modifier, rotations, opacities, sh
         rgb[..., 2] = result[..., 2]
         
     ## 保存各个参数值
-    depths = p_view[in_frustum_mask][if_inv_mask][..., 2]
-    points_xy_image = point_image
-    conic_opacity = torch.cat((conic, opacities[in_frustum_mask][if_inv_mask].unsqueeze(1)), dim=1)
+    depths = p_view[in_frustum_mask][if_inv_mask][tile_touched_mask][..., 2]
+    points_xy_image = point_image[tile_touched_mask]
+    conic_opacity = torch.cat((conic[tile_touched_mask], opacities[in_frustum_mask][if_inv_mask][tile_touched_mask]), dim=1)
     
-    return depths, points_xy_image, rgb, conic_opacity, rect_min, rect_max
+    # 最终可视的高斯掩码
+    visibility_filter = in_frustum_mask.clone()
+    visibility_filter[in_frustum_mask] &= if_inv_mask
+    visibility_filter[in_frustum_mask] &= tile_touched_mask
+    
+    return depths, points_xy_image, rgb, conic_opacity, rect_min[tile_touched_mask], rect_max[tile_touched_mask], my_radius[tile_touched_mask], visibility_filter
+    
+def render_per_pixel1(points_xy_image, tile_gs_pair, rgb, conic_opacity, radii, tiles_x, tiles_y, W, H):
+    # tile_idx_gs = torch.cat((tile_gs_pair, torch.arange(0, tiles_x * tiles_y).unsqueeze(1).to(points_xy_image.device)), dim=1)
+    
+    # # dim = 1 的地方，第一个数放像素索引，第二个数放像素对应的tile索引，第三个元素放计算的颜色
+    # rgb_for_pixel = torch.cat((torch.arange(0, W * H).unsqueeze(1), torch.zeros((W * H, 2))), dim=1)
+    # # 计算每个像素对应的tile
+    # rgb_for_pixel[:, 1] = rgb_for_pixel[:, 0] // W // TILE_X * tiles_x + rgb_for_pixel[:, 0] % W // TILE_Y
+    start_time = time.time()
+    rgb_for_pixel = torch.zeros((W, H, 3), dtype=torch.float32, device=points_xy_image.device)
+    contributor_gs_num = torch.zeros(W*H, dtype=torch.float32, device=points_xy_image.device)
+    for tile_idx in range(tiles_x * tiles_y):
+        # 计算tile的左上角坐标
+        tile_x_pix = (tile_idx % tiles_x) * TILE_X
+        tile_y_pix = (tile_idx // tiles_x) * TILE_Y
+        
+        # 提取属于该tile的gs的id
+        gs_for_tile = tile_gs_pair[tile_idx, :]
+        mask = gs_for_tile != -1
+        filtered_gs = gs_for_tile[mask]
+        
+        # dim0存像素索引， dim1存像素x坐标， dim2存像素y坐标
+        pixel_for_tile = torch.zeros((TILE_X * TILE_Y, 3), device=points_xy_image.device)
+        # pixel_gs_pair = torch.zeros((TILE_X * TILE_Y, 3), device=points_xy_image.device)
+        for i in range(TILE_X):
+            for j in range(TILE_Y):
+                pixel_idx = (tile_y_pix + j) * W + (tile_x_pix + i)
+                pixel_for_tile[i * TILE_X + j, 0] = pixel_idx
+                pixel_for_tile[i * TILE_X + j, 1] = pixel_idx % W
+                pixel_for_tile[i * TILE_X + j, 2] = pixel_idx // W
+                # T = 0
+                # contributor = 0
+                # for gs in filtered_gs:
+                #     d = [points_xy_image[gs, 0] - pixel_idx % W, points_xy_image[gs, 1] - pixel_idx // W]
+                #     power = -0.5 * (conic_opacity[gs, 0] * d[0] * d[0] + conic_opacity[gs, 2] * d[1] * d[1]) - conic_opacity[gs, 1] * d[0] * d[1]
+                #     if power > 0: 
+                #         continue
+                #     alpha = conic_opacity[gs, 3] * torch.exp(power)
+                #     test_T = T * (1 - alpha)
+                #     if test_T < 0.0001:
+                #         break
+                #     rgb_for_pixel[pixel_idx % W, pixel_idx // W, 0] += rgb[gs, 0] * alpha * T
+                #     rgb_for_pixel[pixel_idx % W, pixel_idx // W, 1] += rgb[gs, 1] * alpha * T
+                #     rgb_for_pixel[pixel_idx % W, pixel_idx // W, 2] += rgb[gs, 2] * alpha * T
+                #     contributor += 1
+                #     T = test_T
+                # contributor_gs_num[pixel_idx] = contributor
+        rgb_for_tile = torch.zeros(TILE_X * TILE_Y, filtered_gs.shape[0])
+        for gs in filtered_gs:
+            T = torch.zeros((TILE_X * TILE_Y), dtype=torch.float32, device=points_xy_image.device)
+            d = [points_xy_image[gs, 0] - pixel_for_tile[:, 1], points_xy_image[gs, 1] - pixel_for_tile[:, 2]]
+            power = -0.5 * (conic_opacity[gs, 0] * d[:, 0] * d[:, 0] + conic_opacity[gs, 2] * d[:, 1] * d[:, 1]) - conic_opacity[gs, 1] * d[:, 0] * d[:, 1]
+            power = torch.where(power < 0.001, torch.tensor(-float('inf')), power)
+            alpha = conic_opacity[gs, 3] * torch.exp(power)
+            T = T * (1 - alpha)
+            T = torch.where(T < 0.0001, torch.tensor(0.0), T)
+            rgb_for_tile += rgb[gs, :] * alpha[:, None] * T[:, None]
+            
+            
+    rgb_for_pixel = rgb_for_pixel.cpu()
+
+    # 将张量值从[0, 1]范围扩展到[0, 255]范围并转换为uint8类型
+    rgb_for_pixel = (rgb_for_pixel * 255).byte()
+
+    # 转换为PIL图像
+    transform = transforms_T.ToPILImage()
+    image = transform(rgb_for_pixel.permute(2, 0, 1))  # 需要将张量的通道顺序从(W, H, 3)转换为(3, W, H)
+
+    # 保存图像
+    image.save('output_image.png')
+    end_time = time.time()
+    print(f"渲染图片保存成功，用时为{end_time - start_time}")
+        
+    return
 
 def IfTileInGS(idx, tile_x, rect_min, rect_max):
     idx_x = idx % tile_x
@@ -227,6 +334,10 @@ def render_per_pixel(points_xy_image, rgb, conic_opacity, depths, background, ti
     output_color = torch.zeros((W, H, 3), dtype=torch.float, device='cuda')
     final_T = torch.zeros((W, H, 1), device=points_xy_image.device, dtype=torch.float) # 每一像素点的透明度
     contribute_num_for_pixel = torch.zeros((W, H, 1), dtype=torch.float, device='cuda')
+    # contribute_value
+
+    # 渲染进度条
+    # progress_bar = tqdm(range(tiles_x * tiles_y), desc="Rendering progress")
     
     for tile_idx in range(tiles_x * tiles_y):
         i = tile_idx % tiles_x
@@ -240,8 +351,12 @@ def render_per_pixel(points_xy_image, rgb, conic_opacity, depths, background, ti
         pix_num_y = min(TILE_Y, pixel_max_y - pixel_min_y)
         
         if_idx_in_gs = IfTileInGS(tile_idx, tiles_x, rect_min, rect_max)
-        depths_filtered = depths[if_idx_in_gs]
-        filtered_gs_sorted = points_xy_image[if_idx_in_gs]  
+        # if_idx_in_gs = ((i >= rect_min[:, 0]) & (i < rect_max[:, 0]) & (j >= rect_min[:, 1]) & (j < rect_max[:, 1]))
+        # depths_filtered = depths[if_idx_in_gs]
+        # sorted_idx = torch.argsort(depths_filtered)
+        filtered_gs_sorted = points_xy_image[if_idx_in_gs]
+        # depth_tile = depths[if_idx_in_gs]
+        
         gs_num_of_tile = filtered_gs_sorted.shape[0]
         
         # 初始化变量
@@ -260,46 +375,67 @@ def render_per_pixel(points_xy_image, rgb, conic_opacity, depths, background, ti
         power = (-0.5 * (con_o[..., 0] * d[..., 0] * d[..., 0] + con_o[..., 2] * d[..., 1] * d[..., 1]) - con_o[..., 1] * d[..., 0] * d[..., 1]).unsqueeze(-1)
         power = torch.where(power > 0, torch.tensor(-float('inf')), power)
         alpha[:, :, :, 0] = con_o[:, :, :, 3] * torch.exp(power[:, :, :, 0])
+        # alpha = torch.where(alpha < (1 / 255), 0, alpha)
 
-        alpha_cum = 1 - alpha
-        T = torch.cumprod(alpha_cum, dim=2)
+        T = torch.cumprod(1 - alpha, dim=2)
         T = T / (1 - alpha)
         
-        final_T[pixel_min_x : pixel_max_x, pixel_min_y : pixel_max_y] = T[..., -1, 0:1] # 更新当前tile的final_T，final_T=π(i)(1-alpha)
-        color = torch.sum(alpha * T * rgb_c, dim=2)
+        conrtibute_value = alpha * T
+        if T.shape[2] == 0:
+            final_T[pixel_min_x:pixel_max_x, pixel_min_y:pixel_max_y] = 1
+        else:
+            final_T[pixel_min_x : pixel_max_x, pixel_min_y : pixel_max_y] = T[..., -1, 0:1] # 更新当前tile的final_T，final_T=π(i)(1-alpha)
+        color = torch.sum(conrtibute_value * rgb_c, dim=2)
         output_color[pixel_min_x : pixel_max_x, pixel_min_y : pixel_max_y] = color
-        contribute_num_for_pixel[pixel_min_x : pixel_max_x, pixel_min_y : pixel_max_y] = torch.sum((alpha != 0).int(), dim = 2)
+        
+        # with torch.no_grad():
+        # contribute_num_for_pixel[pixel_min_x : pixel_max_x, pixel_min_y : pixel_max_y] = torch.sum((alpha > (1/255)).int(), dim = 2)
+        #   contribute_num_for_pixel[pixel_min_x : pixel_max_x, pixel_min_y : pixel_max_y] = torch.sum(torch.topk(conrtibute_value, 100, largest=True,sorted = True, dim = 2)[0], dim=2) / torch.sum(conrtibute_value, dim=2)
 
-    contribute_num_for_pixel_1D = contribute_num_for_pixel.squeeze(-1).flatten()
-    _, ax = plt.subplots()
-    ax.plot(contribute_num_for_pixel_1D.cpu(), marker='o', linestyle='-', color='b', label='Line 1')
-    plt.title('GS contributed per pixel')
-    ax.set_xlabel("Pix_Index")
-    ax.set_ylabel("contribute_GS_num")
-    plt.savefig("contribute_GS_num_per_PIX.png")
+        # torch.sum(torch.topk((torch.where(alpha < (1 / 255), 0, alpha) * T)[0][0].squeeze(), 10, largest=True,sorted = True)[0])
+    #         with torch.no_grad():
+    #             progress_bar.update(1)
+        
+    # progress_bar.close()
+    # contribute_num_for_pixel_1D = contribute_num_for_pixel.squeeze(-1).flatten()
+    
+    # mask = contribute_num_for_pixel_1D > 0.8
+
+    # # 步骤 2: 将布尔掩码转换为整数类型
+    # mask_int = mask.int()
+
+    # # 步骤 3: 计算整数张量的和
+    # count = mask_int.sum()
+    
+    # _, ax = plt.subplots()
+    # ax.plot(contribute_num_for_pixel_1D.cpu(), marker='o', linestyle='-', color='b', label='Line 1')
+    # plt.title('GS contributed max100 per pixel')
+    # ax.set_xlabel("Pix_Index")
+    # ax.set_ylabel("contribute_value")
+    # plt.savefig("contribute_rate_max100_sum_per_PIX.png")
     
     output_color += final_T * background
 
     # 显示渲染得到的图片
     # 将张量从 GPU 移动到 CPU，并转换为 NumPy 数组
-    output_color = output_color.permute(1, 0, 2)
-    render_image = output_color.detach().cpu().numpy()
+    # output_color = output_color.permute(1, 0, 2)
+    #render_image = output_color.detach().cpu().numpy()
 
     # 确保 RGB 值在 [0, 1] 的范围内，并转换为 [0, 255] 的范围内的整数
-    render_image = (np.clip(render_image, 0, 1) * 255).astype(np.uint8)
+    #render_image = (np.clip(render_image, 0, 1) * 255).astype(np.uint8)
 
     # 将 NumPy 数组转换为图像
-    render_image = Image.fromarray(render_image)
+    #render_image = Image.fromarray(render_image)
 
     # 显示图像
-    render_image.show()
+    # render_image.show()
 
     # 将图像保存到文件
     # render_image.save("render_image.png")
-    end_time = time.time()
-    print(f"渲染图片保存成功，用时为{end_time - start_time}")
+    # end_time = time.time()
+    # print(f"渲染图片保存成功，用时为{end_time - start_time}")
     
-    return output_color
+    return output_color.permute(2, 0, 1)
             
             
     
