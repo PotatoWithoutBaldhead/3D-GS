@@ -41,10 +41,8 @@ class GaussianRasterizationSettings(NamedTuple):
     debug : bool
     
 class GaussianRasterizer(nn.Module):
-    def __init__(self, raster_settings):
+    def __init__(self):
         super().__init__()
-        self.raster_settings = raster_settings
-        # self.means2D = None
         
     def markVisible(self, positions):
         with torch.no_grad():
@@ -58,8 +56,8 @@ class GaussianRasterizer(nn.Module):
         return visible
     
     def forward(self, means3D, opacities, shs = None, color_precomp = None,
-                scales = None, rotations = None, cov3D_precomp = None):
-        raster_settings = self.raster_settings
+                scales = None, rotations = None, cov3D_precomp = None, raster_settings = None):
+        self.raster_settings = raster_settings
         
         if (shs is None and color_precomp is None) or (shs is not None and color_precomp is not None):
             raise Exception('Please provide excatly one either SHs or precomputed colors!')
@@ -82,7 +80,7 @@ class GaussianRasterizer(nn.Module):
         rasterizer = RasterizeGaussians(raster_settings)
 
         ## 开始渲染
-        result = rasterizer(
+        color, radii, visibility_filter, p_view = rasterizer(
             means3D,
             shs,
             color_precomp,
@@ -91,6 +89,7 @@ class GaussianRasterizer(nn.Module):
             rotations,
             cov3D_precomp
         )
-        # self.means2D = rasterizer.means2D
-        return result
+        p_view.retain_grad()
+        self._p_view = p_view
+        return color, radii, visibility_filter, p_view
     

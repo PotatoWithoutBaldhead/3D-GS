@@ -10,6 +10,17 @@ import tqdm
 import math
 import matplotlib.pyplot as plt
    
+
+# def in_frustum(points, viewmatrix, projmatrix, prefiltered):
+#     P = points.size(0)
+#     p_orig_hom = torch.cat(points, torch.ones((P, 1)))
+#     p_hom = projmatrix @ p_orig_hom.T
+#     p_w = 1.0 / (p_hom[:, 3] + 0.0000001)
+#     p_proj = [p_orig_hom[:, 0] * p_w, p_orig_hom[:, 1] * p_w, p_orig_hom[:, 2] * p_w]
+#     p_view = viewmatrix @ p_orig_hom.T
+    
+#     mask = (p_view[:, 2] <= 0.2 and not prefiltered).squeeze()
+#     return mask
 TILE_X = 16
 TILE_Y = 16
 C0 = 0.28209479177387814
@@ -49,7 +60,11 @@ def computeCov2D(points, fovx, fovy, tan_fovx, tan_fovy, covariance3D, viewmatri
     tx = (p_orig_hom[..., 0] / p_orig_hom[..., 2]).clip(min=-tan_fovx*1.3, max=tan_fovx*1.3) * points[..., 2]
     ty = (p_orig_hom[..., 1] / p_orig_hom[..., 2]).clip(min=-tan_fovy*1.3, max=tan_fovy*1.3) * points[..., 2]
     tz = p_orig_hom[..., 2]
-
+    # t[:, 0] = min(limx, max(-limx, txtz)) * t[:, 2]
+    # t[:, 1] = min(limy, max(-limx, tytz)) * t[:, 2]
+    # t[:, 0] = torch.min(torch.tensor(limx, device='cuda'), torch.max(torch.tensor(-limx, device='cuda'), txtz)) * t[:, 2]
+    # t[:, 1] = torch.min(torch.tensor(limy, device='cuda'), torch.max(torch.tensor(-limy, device='cuda'), tytz)) * t[:, 2]
+    
     ## 计算雅可比矩阵J
     J = torch.zeros((P, 3, 3), dtype=torch.float, device='cuda')
     J[..., 0, 0] = 1 / tz * fovx
@@ -62,6 +77,15 @@ def computeCov2D(points, fovx, fovy, tan_fovx, tan_fovy, covariance3D, viewmatri
     W_expanded = W.unsqueeze(0).expand(P, -1, -1)
     
     M = torch.bmm(J, W_expanded)
+    
+    # Vrk = torch.zeros((P, 3, 3), dtype=torch.float, device='cuda')
+    # Vrk[:, 0, 0] = covariance3D[:, 0]
+    # Vrk[:, 0, 1] = Vrk[:, 1, 0] = covariance3D[:, 1]
+    # Vrk[:, 0, 2] = Vrk[:, 2, 0] = covariance3D[:, 2]
+    # Vrk[:, 1, 1] = covariance3D[:, 3]
+    # Vrk[:, 1, 2] = Vrk[:, 2, 1] = covariance3D[:, 4]
+    # Vrk[:, 2, 2] = covariance3D[:, 5]
+    
     cov = torch.bmm(torch.bmm(M, covariance3D), M.transpose(1, 2))
     cov[:, 0, 0] += 0.3
     cov[:, 1, 1] += 0.3
@@ -139,28 +163,30 @@ def preprocess(P, D, points, scales, scale_modifier, rotations, opacities, shs, 
     p_one = torch.ones((P, 1), device=data_device)
     p_orig_hom = torch.cat((points, p_one), dim=1)
     p_view =  p_orig_hom @ viewmatrix
+    p_view.retain_grad()
     in_frustum_mask = (p_view[:, 2] > 0.2).squeeze()  # 掩码1：判断是否在是椎体内的mask
+    points_view = p_view[in_frustum_mask]
     
     points_in_frustum = points[in_frustum_mask]  # 在视锥体内的高斯
+    # P_in_frustum = points_in_frustum.shape[0]
     
     p_orig_hom_in_frustum = p_orig_hom[in_frustum_mask]
     p_hom = p_orig_hom_in_frustum @ projmatrix
     p_w = 1.0 / (p_hom[:, 3] + 0.0000001)
     
     p_proj = p_hom * p_w[:, None]
-
-    # else:
     L = build_scaling_rotation(scale_modifier * scales[in_frustum_mask], rotations[in_frustum_mask])
     cov3D = L @ L.transpose(1,2)
-  
+       
     ## 计算2D协方差 
-    cov2D = computeCov2D(p_view[in_frustum_mask], focal_x, focal_y, tan_fovx, tan_fovy, cov3D, viewmatrix)
+    cov2D = computeCov2D(points_view, focal_x, focal_y, tan_fovx, tan_fovy, cov3D, viewmatrix)
 
     det = torch.det(cov2D)
     if_inv_mask = (det != 0)  # 掩码2：判断二维协方差是否可逆的mask
     
     points_in_frustum_and_inv = points_in_frustum[if_inv_mask]  # 在视锥体内且二维协方差可逆的高斯
     P_in_frustum_and_inv = points_in_frustum_and_inv.shape[0]
+    # det_not0 = det[if_inv_mask]
     cov2D_det_not0 = cov2D[if_inv_mask]
     
     # 二维协方差的逆矩阵
@@ -177,6 +203,7 @@ def preprocess(P, D, points, scales, scale_modifier, rotations, opacities, shs, 
     
     ## 将ndc坐标转换为像素坐标
     point_image = torch.zeros((P_in_frustum_and_inv, 2), dtype=torch.float, device=data_device)
+    point_image[:, 0] = ndc2Pix(p_proj[if_inv_mask][:, 0], W)
     point_image[:, 1] = ndc2Pix(p_proj[if_inv_mask][:, 1], H)
     
     ## 筛选高斯是否对tile有贡献
@@ -205,7 +232,10 @@ def preprocess(P, D, points, scales, scale_modifier, rotations, opacities, shs, 
         rgb[..., 2] = result[..., 2]
         
     ## 保存各个参数值
-    depths = p_view[in_frustum_mask][if_inv_mask][tile_touched_mask][..., 2]
+    point_view_attribute = points_view[if_inv_mask][tile_touched_mask]
+    point_view_attribute.requires_grad_(True)
+    point_view_attribute.retain_grad()
+    depths = point_view_attribute[..., 2]
     points_xy_image = point_image[tile_touched_mask]
     conic_opacity = torch.cat((conic[tile_touched_mask], opacities[in_frustum_mask][if_inv_mask][tile_touched_mask]), dim=1)
     
@@ -214,8 +244,8 @@ def preprocess(P, D, points, scales, scale_modifier, rotations, opacities, shs, 
     visibility_filter[in_frustum_mask] &= if_inv_mask
     visibility_filter[in_frustum_mask] &= tile_touched_mask
     
-    return depths, points_xy_image, rgb, conic_opacity, rect_min[tile_touched_mask], rect_max[tile_touched_mask], my_radius[tile_touched_mask], visibility_filter
-    
+    return depths, points_xy_image, rgb, conic_opacity, rect_min[tile_touched_mask], rect_max[tile_touched_mask], my_radius[tile_touched_mask], visibility_filter, p_view
+
 def IfTileInGS(idx, tile_x, rect_min, rect_max):
     idx_x = idx % tile_x
     idx_y = idx // tile_x
@@ -225,7 +255,6 @@ def IfTileInGS(idx, tile_x, rect_min, rect_max):
     return tile_in_gs
 
 def render_per_pixel(points_xy_image, rgb, conic_opacity, depths, background, tiles_x, tiles_y, W, H, rect_min, rect_max):
-    
     output_color = torch.zeros((W, H, 3), dtype=torch.float, device='cuda')
     final_T = torch.zeros((W, H, 1), device=points_xy_image.device, dtype=torch.float) # 每一像素点的透明度
 
@@ -243,6 +272,7 @@ def render_per_pixel(points_xy_image, rgb, conic_opacity, depths, background, ti
         if_idx_in_gs = IfTileInGS(tile_idx, tiles_x, rect_min, rect_max)
         filtered_gs_sorted = points_xy_image[if_idx_in_gs]
 
+        
         gs_num_of_tile = filtered_gs_sorted.shape[0]
         
         # 初始化变量
@@ -275,7 +305,7 @@ def render_per_pixel(points_xy_image, rgb, conic_opacity, depths, background, ti
          
     output_color += final_T * background
     
-    return output_color.permute(2, 0, 1)
+    return output_color.permute(2, 1, 0)
             
             
     
